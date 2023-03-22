@@ -274,6 +274,20 @@ public abstract class BaseHoodieTableFileIndex implements AutoCloseable {
         ));
   }
 
+  protected List<String> listSubPartitionPaths(List<String> relativePartitionPaths) {
+    return relativePartitionPaths.stream()
+            .flatMap(p -> {
+              try {
+                List<String> allPaths = tableMetadata.getSubPaths(p);
+                allPaths.remove(".hoodie"); // Remove .hoodie metadata subdirectories.
+                return allPaths.stream();
+              } catch (IOException e) {
+                throw new HoodieIOException("Error fetching partition paths", e);
+              }
+            })
+            .collect(Collectors.toList());
+  }
+
   protected List<PartitionPath> listPartitionPaths(List<String> relativePartitionPaths) {
     List<String> matchedPartitionPaths;
     try {

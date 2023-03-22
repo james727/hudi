@@ -95,6 +95,25 @@ public class FileSystemBackedTableMetadata implements HoodieTableMetadata {
     }).collect(Collectors.toList());
   }
 
+  @Override
+  public List<String> getSubPaths(String relativePathPrefix) throws IOException {
+    Path pathToList = StringUtils.isNullOrEmpty(relativePathPrefix)
+            ? new Path(datasetBasePath) : new Path(datasetBasePath, relativePathPrefix);
+
+
+    FileSystem fileSystem = pathToList.getFileSystem(hadoopConf.get());
+    FileStatus[] dirFileListing = fileSystem.listStatus(pathToList);
+
+    List<String> outputPaths = new CopyOnWriteArrayList<>();
+    for (FileStatus fileStatus: dirFileListing) {
+      if (fileStatus.isDirectory()) {
+        outputPaths.add(FSUtils.getRelativePartitionPath(new Path(datasetBasePath), fileStatus.getPath()).toString());
+      }
+    }
+
+    return outputPaths;
+  }
+
   private List<String> getPartitionPathWithPathPrefix(String relativePathPrefix) throws IOException {
     List<Path> pathsToList = new CopyOnWriteArrayList<>();
     pathsToList.add(StringUtils.isNullOrEmpty(relativePathPrefix)

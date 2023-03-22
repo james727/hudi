@@ -153,6 +153,11 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
   }
 
   @Override
+  public List<String> getSubPaths(String relativePathPrefix) throws IOException {
+    throw new IOException("Not implemented for hudi metadata table.");
+  }
+
+  @Override
   public List<String> getPartitionPathWithPathPrefixes(List<String> relativePathPrefixes) throws IOException {
     // TODO: consider skipping this method for non-partitioned table and simplify the checks
     return getAllPartitionPaths().stream()

@@ -278,35 +278,59 @@ class SparkHoodieTableFileIndex(spark: SparkSession,
   //
   // We can deduce full partition-path w/o doing a single listing: `us/2022-01-01`
   private def tryListByPartitionPathPrefix(partitionColumnNames: Seq[String], partitionColumnPredicates: Seq[Expression]) = {
-    // Static partition-path prefix is defined as a prefix of the full partition-path where only
-    // first N partition columns (in-order) have proper (static) values bound in equality predicates,
-    // allowing in turn to build such prefix to be used in subsequent filtering
-    val staticPartitionColumnNameValuePairs: Seq[(String, Any)] = {
-      // Extract from simple predicates of the form `date = '2022-01-01'` both
-      // partition column and corresponding (literal) value
-      val staticPartitionColumnValuesMap = extractEqualityPredicatesLiteralValues(partitionColumnPredicates)
-      // NOTE: For our purposes we can only construct partition-path prefix if proper prefix of the
-      //       partition-schema has been bound by the partition-predicates
-      partitionColumnNames.takeWhile(colName => staticPartitionColumnValuesMap.contains(colName))
-        .map(colName => (colName, staticPartitionColumnValuesMap(colName).get))
+    var partitionState = Seq(Seq.empty[(String, Any)]) // Initialize with empty root node.
+    val staticPartitionColumnValuesMap = extractEqualityPredicatesLiteralValues(partitionColumnPredicates)
+    for (colName <- partitionColumnNames) {
+      logDebug(s"tryListByPartitionPathPrefix: Processing column ${colName}")
+      // If we have an equality predicate on the partition column, append to each of the path structures
+      // in the partition accumulator
+      if (staticPartitionColumnValuesMap.contains(colName)) {
+        logDebug(s"Found equality predicate for ${colName}; using ${staticPartitionColumnValuesMap(colName).get}")
+
+        partitionState = {
+          partitionState.map { state => {
+            state :+ (colName, staticPartitionColumnValuesMap(colName).get)
+          }}
+        }
+      } else {
+        logDebug(s"tryListByPartitionPathPrefix: No equality predicate; listing partition directories")
+
+        // We do not have an equality predicate. In this case, generate the prefixes from the current state
+        // and list the subdirectories for each, using the results to expand partitionState.
+        val prefixes = {
+          if (partitionState.length == 1 && partitionState.headOption.get.isEmpty) {
+            // In this case we are listing the outermost prefixes.
+            Seq("")
+          } else {
+            partitionState.map(composeRelativePartitionPath)
+          }
+        }
+        val subPaths = listSubPartitionPaths(prefixes.toList.asJava).asScala
+
+        logDebug(s"tryListByPartitionPathPrefix: Got subpaths, first 5 values: ${subPaths.toList.take(5).mkString(", ")}")
+
+        // :KLUDGE: Assume Hive-style partitioning to reconstruct partition state.
+        partitionState = subPaths.map { prefix =>
+          val tokens = prefix.split("/")
+          val keyValues = tokens.map { token =>
+            val Array(key, value) = token.split("=")
+            if (key == "env_id") {
+              (key, value.toLong)
+            } else {
+              (key, value)
+            }
+          }
+          keyValues.toSeq
+        }
+      }
     }
 
-    if (staticPartitionColumnNameValuePairs.isEmpty) {
-      logDebug("Unable to compose relative partition path prefix from the predicates; falling back to fetching all partitions")
-      getAllQueryPartitionPaths.asScala
-    } else {
-      // Based on the static partition-column name-value pairs, we'll try to compose static partition-path
-      // prefix to try to reduce the scope of the required file-listing
-      val relativePartitionPathPrefix = composeRelativePartitionPath(staticPartitionColumnNameValuePairs)
+    logDebug(s"tryListByPartitionPathPrefix: Finished processing all ${partitionColumnNames.length} partition columns")
 
-      if (staticPartitionColumnNameValuePairs.length == partitionColumnNames.length) {
-        // In case composed partition path is complete, we can return it directly avoiding extra listing operation
-        Seq(new PartitionPath(relativePartitionPathPrefix, staticPartitionColumnNameValuePairs.map(_._2.asInstanceOf[AnyRef]).toArray))
-      } else {
-        // Otherwise, compile extracted partition values (from query predicates) into a sub-path which is a prefix
-        // of the complete partition path, do listing for this prefix-path only
-        listPartitionPaths(Seq(relativePartitionPathPrefix).toList.asJava).asScala
-      }
+    partitionState.map { state =>
+      val pathPrefix = composeRelativePartitionPath(state)
+      logDebug(s"tryListByPartitionPathPrefix: Generated partition prefix: ${pathPrefix}")
+      new PartitionPath(pathPrefix, state.map(_._2.asInstanceOf[AnyRef]).toArray)
     }
   }
 
